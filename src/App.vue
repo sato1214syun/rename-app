@@ -70,7 +70,7 @@ const processedFiles = computed(() => {
   }
   
   try {
-    const regex = searchRegex.value ? new RegExp(searchRegex.value, 'g') : null;
+    const regex = searchRegex.value ? new RegExp(searchRegex.value) : null;
 
     const sequenceMatch = replaceText.value.match(/\{(\d+)\}/);
     const sequenceLength = sequenceMatch?.[1]?.length ?? 0;
@@ -92,7 +92,7 @@ const processedFiles = computed(() => {
         }
       }
 
-      const replacedBase = regex ? baseName.replace(regex, replaceText.value) : replaceText.value;
+      const replacedBase = regex ? baseName.replace(regex, replaceText.value) : baseName;
 
       return replacedBase + extension;
     }, { axis: 1 });
@@ -127,7 +127,7 @@ const processedFiles = computed(() => {
     
     return df;
 
-  } catch (e) {
+  } catch (e: unknown) {
     const errorMessage = e instanceof Error ? e.message : String(e);
     let df = new DataFrame(files.value);
     df.addColumn('newName', df['name'], { inplace: true });
