@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { message, open } from '@tauri-apps/plugin-dialog';
-import { DataFrame, toJSON } from 'danfojs';
 import { computed, ref } from "vue";
 
 interface FileEntry {
@@ -41,7 +40,7 @@ async function _openDirectory() {
     if (typeof dir === 'string') {
       currentDirectory.value = dir;
       const result = await invoke("read_files_in_directory", { path: dir });
-      
+
       if (Array.isArray(result)) {
         files.value = result as FileEntry[];
         errorMessage.value = "";
@@ -58,113 +57,153 @@ async function _openDirectory() {
 
 const processedFiles = computed(() => {
   if (files.value.length === 0) {
-    return new DataFrame([]);
+    return [];
   }
 
-  let df = new DataFrame(files.value);
-  df.addColumn('newName', df['name'], { inplace: true });
-  df.addColumn('error', new Array(df.index.length).fill(null), { inplace: true });
-
-  if (!searchRegex.value && !replaceText.value) {
-    return df;
-  }
-  
   try {
-    const regex = searchRegex.value ? new RegExp(searchRegex.value) : null;
+    // ファイルを処理してnewNameを追加
+    let processedFileList = files.value.map(file => ({
+      ...file,
+      newName: file.name, // 初期値は元のファイル名
+      error: null as string | null
+    }));
 
+    if (!searchRegex.value && !replaceText.value) {
+      return processedFileList;
+    }
+
+    const regex = searchRegex.value ? new RegExp(searchRegex.value) : null;
     const sequenceMatch = replaceText.value.match(/\{(\d+)\}/);
     const sequenceLength = sequenceMatch?.[1]?.length ?? 0;
     const startNumber = sequenceMatch?.[1] ? parseInt(sequenceMatch[1], 10) : 0;
     const sequencePlaceholder = sequenceMatch?.[0] ?? '';
 
-    // Base newName calculation
-    const newNames = df.apply((row) => {
-      let baseName = row[0];
-      if (typeof baseName !== 'string') {
-        return baseName; // Return original value if not a string
-      }
+    // 基本的な名前変更を適用
+    processedFileList = processedFileList.map(file => {
+      let baseName = file.name;
       let extension = '';
       if (preserveExtension.value) {
         const lastDotIndex = baseName.lastIndexOf('.');
-        if (lastDotIndex > 0) { // a.txt -> .txt, .gitignore -> no extension
+        if (lastDotIndex > 0) {
           extension = baseName.substring(lastDotIndex);
           baseName = baseName.substring(0, lastDotIndex);
         }
       }
-
       const replacedBase = regex ? baseName.replace(regex, replaceText.value) : baseName;
+      const newName = replacedBase + extension;
+      // newNameが空やundefinedの場合はエラーをセット
+      let error: string | null = null;
+      if (!newName || newName.trim() === "") {
+        error = "New name is empty";
+      }
+      return {
+        ...file,
+        newName,
+        error
+      };
+    });
 
-      return replacedBase + extension;
-    }, { axis: 1 });
-
-    df.addColumn('newName', newNames.values, { inplace: true });
-
-    // Apply sequence to sorted, affected files
+    // シーケンス番号を適用（必要な場合）
     if (sequenceMatch) {
-      // Create a temporary sorted DataFrame to determine sequence order
-      const tempDf = df.sortValues(sortKey.value, { ascending: sortOrder.value === 'asc' });
-      
+      // ソートして順序を決定
+      const sortedFiles = [...processedFileList].sort((a, b) => {
+        const aVal = sortKey.value === 'name' ? a.name :
+                    sortKey.value === 'newName' ? a.newName :
+                    sortKey.value === 'modified' ? a.modified : a.name;
+        const bVal = sortKey.value === 'name' ? b.name :
+                    sortKey.value === 'newName' ? b.newName :
+                    sortKey.value === 'modified' ? b.modified : b.name;
+
+        const comparison = aVal.localeCompare(bVal);
+        return sortOrder.value === 'asc' ? comparison : -comparison;
+      });
+
       let sequenceCounter = 0;
-      const finalNewNames = tempDf.apply((row) => {
-        console.log("Processing row:", row);
-        let currentNewName = row[3];
-        if (row[0] !== currentNewName) { // Only apply sequence to changed names
-          const paddedNumber = String(startNumber + sequenceCounter).padStart(sequenceLength, '0');
-          if (typeof currentNewName === 'string') {
-             currentNewName = currentNewName.replace(sequencePlaceholder, paddedNumber);
+      const fileIndexMap = new Map(processedFileList.map((file, index) => [file.path, index]));
+
+      sortedFiles.forEach(sortedFile => {
+        const originalIndex = fileIndexMap.get(sortedFile.path);
+        if (originalIndex !== undefined) {
+          const file = processedFileList[originalIndex];
+          if (file.name !== file.newName) { // 変更されたファイルのみ
+            const paddedNumber = String(startNumber + sequenceCounter).padStart(sequenceLength, '0');
+            file.newName = file.newName.replace(sequencePlaceholder, paddedNumber);
+            sequenceCounter++;
           }
-          sequenceCounter++;
         }
-        return currentNewName;
-      }, { axis: 1 });
-
-
-      // Update the original DataFrame based on the sorted one
-      tempDf.addColumn('newName', finalNewNames.values, { inplace: true });
-      // Re-sort by original index to align with the main 'df'
-      df = tempDf.sortIndex();
+      });
     }
-    
-    return df;
+
+    return processedFileList;
 
   } catch (e: unknown) {
     const errorMessage = e instanceof Error ? e.message : String(e);
-    let df = new DataFrame(files.value);
-    df.addColumn('newName', df['name'], { inplace: true });
-    df.addColumn('error', new Array(df.index.length).fill(errorMessage), { inplace: true });
-    return df;
+    return files.value.map(file => ({
+      ...file,
+      newName: file.name,
+      error: errorMessage
+    }));
   }
 });
 
-const sortedRenamedFiles = computed(() => {
-  const df = processedFiles.value;
-  if (!df || df.shape[0] === 0) {
+const _sortedRenamedFiles = computed(() => {
+  const processedFileList = processedFiles.value;
+  if (!processedFileList || processedFileList.length === 0) {
     return [];
   }
-  
-  const sortedDf = df.sortValues(sortKey.value, { ascending: sortOrder.value === 'asc' });
-  return toJSON(sortedDf);
+
+  try {
+    const sorted = [...processedFileList].sort((a, b) => {
+      const aVal = sortKey.value === 'name' ? a.name :
+                  sortKey.value === 'newName' ? a.newName :
+                  sortKey.value === 'modified' ? a.modified : a.name;
+      const bVal = sortKey.value === 'name' ? b.name :
+                  sortKey.value === 'newName' ? b.newName :
+                  sortKey.value === 'modified' ? b.modified : b.name;
+
+      const comparison = aVal.localeCompare(bVal);
+      return sortOrder.value === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  } catch {
+    return [];
+  }
 });
 
 async function _rename() {
   try {
-    const df = processedFiles.value;
-    if (df.shape[0] === 0) return;
+    const processedFileList = processedFiles.value;
+    if (!processedFileList || processedFileList.length === 0) return;
 
-    const filesToRenameJson = toJSON(df.query(df['name'].ne(df['newName']))) as FileEntry[];
-    const filesToRenamePayload = filesToRenameJson.map(f => ({
+    // 変更されたファイルをフィルタリング（エラーがないもののみ）
+    const filesToRename = processedFileList.filter(f =>
+      f.name !== f.newName &&
+      !f.error &&
+      f.newName &&
+      f.newName.trim() !== ''
+    );
+
+    const filesToRenamePayload = filesToRename.map(f => ({
       name: f.name,
       path: f.path,
       modified: f.modified,
-      new_name: f.newName
-    }));
+      newName: f.newName
+    })).filter(payload => payload.newName && payload.newName.trim() !== '');
 
-    if (filesToRenamePayload.length === 0) return;
+    // 最終的にnewNameが空のアイテムがないかチェック
+    const invalidPayloads = filesToRenamePayload.filter(p => !p.newName || p.newName.trim() === '');
+    if (invalidPayloads.length > 0) {
+      errorMessage.value = `Invalid new names found for files: ${invalidPayloads.map(p => p.name).join(', ')}`;
+      return;
+    }
 
-    const allFilesJson = toJSON(df) as FileEntry[];
+    if (filesToRenamePayload.length === 0) {
+      return;
+    }
 
     // Check for empty new names
-    const emptyNames = allFilesJson.filter(f => f.newName === '');
+    const emptyNames = processedFileList.filter(f => !f.newName || f.newName.trim() === '');
     if (emptyNames.length > 0) {
       await message('One or more files would be renamed to an empty name. Please adjust your regex or replacement text.', {
         title: 'Invalid Rename',
@@ -173,9 +212,9 @@ async function _rename() {
       return;
     }
 
-    const extensionOnlyNames = allFilesJson.filter(f => {
+    const extensionOnlyNames = processedFileList.filter(f => {
       // Check if the new name is just an extension (e.g., ".txt") or just "."
-      return f.newName.startsWith('.') && f.newName.length > 1 && f.newName.substring(1).indexOf('.') === -1 && f.newName.substring(1).length > 0;
+      return f.newName?.startsWith('.') && f.newName.length > 1 && f.newName.substring(1).indexOf('.') === -1 && f.newName.substring(1).length > 0;
     });
 
     if (extensionOnlyNames.length > 0) {
@@ -187,7 +226,7 @@ async function _rename() {
     }
 
     // Check for duplicate new names
-    const newNames = df['newName'].values;
+    const newNames = processedFileList.map(f => f.newName).filter((name): name is string => name !== undefined);
     const seenNames = new Set<string>();
     const duplicateNames: string[] = [];
 
@@ -216,9 +255,8 @@ async function _rename() {
         const result = await invoke("read_files_in_directory", { path: currentDirectory.value });
         files.value = result as FileEntry[];
       } catch (readFilesError) {
-        console.error("Error re-reading files after rename:", readFilesError);
         errorMessage.value = `Error updating file list: ${readFilesError}`;
-        return; // Stop execution if file list update fails
+        return;
       }
     } else {
       errorMessage.value = "No directory selected to update file list.";
@@ -245,7 +283,7 @@ async function _rename() {
       <label>
         <input type="checkbox" v-model="preserveExtension" /> Preserve Extension
       </label>
-      <button @click="_rename" :disabled="!processedFiles.value || processedFiles.value.shape[0] === 0 || processedFiles.value.column('error').count() > 0">Rename</button>
+      <button @click="_rename" :disabled="files.length === 0">Rename</button>
     </div>
 
     <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
@@ -260,7 +298,7 @@ async function _rename() {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="file in sortedRenamedFiles" :key="file.path">
+          <tr v-for="file in _sortedRenamedFiles" :key="file.path">
             <td>{{ file.name }}</td>
             <td :class="{ 'error': file.error }">{{ file.error || file.newName }}</td>
             <td>{{ new Date(file.modified).toLocaleString() }}</td>
