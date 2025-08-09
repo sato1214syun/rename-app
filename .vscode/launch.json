@@ -5,16 +5,21 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch App Debug(wsl)",
-            "type": "lldb",
+            "name": "Launch App Debug",
+            "type": "cppdbg",
             "request": "launch",
             // change the exe name to your actual exe name
             // (to debug release builds, change `target/debug` to `release/debug`)
-            "program": "${workspaceRoot}/src-tauri/target/debug/rename-app",
+            "program": "${workspaceRoot}/src-tauri/target/debug/rename-app.exe",
             "cwd": "${workspaceRoot}",
             "preLaunchTask": "dev",
             "postDebugTask": "ui:dev:stop",
-            "env": { "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--remote-debugging-port=1421" },
+            "environment": [
+                {
+                    "name": "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                    "value": "--remote-debugging-port=1421"
+                }
+            ]
         },
         {
             "name": "Attach to Webview",
@@ -42,7 +47,10 @@
     "compounds": [
         {
             "name": "Tauri Dev All",
-            "configurations": ["Launch App Debug(wsl)", "Attach to Webview"]
+            "configurations": [
+                "Launch App Debug",
+                "Attach to Webview"
+            ]
         }
-    ],
+    ]
 }
